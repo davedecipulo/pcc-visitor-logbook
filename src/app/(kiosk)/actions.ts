@@ -70,22 +70,32 @@ export async function timeIn(_prev: TimeInState, formData: FormData): Promise<Ti
   const office =
     values.office_to_visit === "Other" ? values.office_other : values.office_to_visit;
 
-  const supabase = createServiceClient();
-  const { data, error } = await supabase
-    .from("visitors")
-    .insert({
-      full_name: values.full_name,
-      contact_number: phone,
-      address: values.address,
-      purpose: values.purpose,
-      purpose_details: values.purpose_details || null,
-      office_to_visit: office,
-      person_to_visit: values.person_to_visit || null,
-      student_name: values.student_name || null,
-      student_course_year: values.student_course_year || null,
-    })
-    .select("log_no, full_name, time_in")
-    .single();
+  // Any failure here (missing/wrong keys, network, database) must come back as
+  // a message, never a thrown error: a throw replaces the kiosk with an error page.
+  let data: { log_no: number; full_name: string; time_in: string } | null = null;
+  let error: unknown = null;
+  try {
+    const supabase = createServiceClient();
+    const res = await supabase
+      .from("visitors")
+      .insert({
+        full_name: values.full_name,
+        contact_number: phone,
+        address: values.address,
+        purpose: values.purpose,
+        purpose_details: values.purpose_details || null,
+        office_to_visit: office,
+        person_to_visit: values.person_to_visit || null,
+        student_name: values.student_name || null,
+        student_course_year: values.student_course_year || null,
+      })
+      .select("log_no, full_name, time_in")
+      .single();
+    data = res.data;
+    error = res.error;
+  } catch (e) {
+    error = e;
+  }
 
   if (error || !data) {
     console.error("timeIn insert failed:", error);
@@ -118,20 +128,25 @@ export async function searchInside(name: string): Promise<InsideMatch[]> {
   const q = String(name ?? "").trim().replace(/\s+/g, " ");
   if (q.length < 2 || q.length > 120) return [];
 
-  const supabase = createServiceClient();
-  const { data, error } = await supabase
-    .from("visitors")
-    .select("id, full_name, office_to_visit, time_in")
-    .is("time_out", null)
-    .ilike("full_name", `%${escapeLike(q)}%`)
-    .order("time_in", { ascending: false })
-    .limit(10);
+  try {
+    const supabase = createServiceClient();
+    const { data, error } = await supabase
+      .from("visitors")
+      .select("id, full_name, office_to_visit, time_in")
+      .is("time_out", null)
+      .ilike("full_name", `%${escapeLike(q)}%`)
+      .order("time_in", { ascending: false })
+      .limit(10);
 
-  if (error) {
-    console.error("searchInside failed:", error);
+    if (error) {
+      console.error("searchInside failed:", error);
+      return [];
+    }
+    return data ?? [];
+  } catch (e) {
+    console.error("searchInside failed:", e);
     return [];
   }
-  return data ?? [];
 }
 
 export type TimeOutResult =
@@ -146,6 +161,15 @@ export async function timeOut(id: string, last4: string): Promise<TimeOutResult>
   if (!/^\d{4}$/.test(String(last4)))
     return { ok: false, message: "Enter the last 4 digits of your contact number." };
 
+  try {
+    return await recordTimeOut(id, last4);
+  } catch (e) {
+    console.error("timeOut failed:", e);
+    return { ok: false, message: "Could not record your time-out. Please ask the guard." };
+  }
+}
+
+async function recordTimeOut(id: string, last4: string): Promise<TimeOutResult> {
   const supabase = createServiceClient();
   const { data: visitor, error } = await supabase
     .from("visitors")
